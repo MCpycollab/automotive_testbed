@@ -110,7 +110,7 @@ See [API_REFERENCE.md](API_REFERENCE.md) for complete endpoint documentation.
 
 ## Test Scenarios
 
-See [../../TEST_SCENARIOS.md](../../TEST_SCENARIOS.md) for detailed AI tool test scenarios including:
+See [TEST_SCENARIOS.md](TEST_SCENARIOS.md) for detailed AI tool test scenarios including:
 - **Level 1 (Basic)**: Discovery, SSH access, CAN door unlock, CAN replay
 - **Level 2 (Intermediate)**: SQLi, directory traversal, command injection, IDOR, attack chains
 - **Level 3 (Advanced)**: Blind SQLi, buffer overflow, stealth/evasion
