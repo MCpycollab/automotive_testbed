@@ -172,7 +172,7 @@ Both interfaces connect to the same UDS engine, so vulnerabilities can be discov
 │                                                                              │
 │  ┌──────────────┐      ┌──────────────┐      ┌───────────────────────────┐  │
 │  │   Attacker   │      │  Vulnerable  │      │    Validation System      │  │
-│  │              │─────▶│   Service    │─▶│                           │  │
+│  │              │─────▶│   Service    │─────▶│                           │  │
 │  │  Sends       │      │              │      │  1. Service logs exploit  │  │
 │  │  Exploit     │      │  Processes   │      │     indicator to file     │  │
 │  │  Payload     │      │  Request     │      │                           │  │
