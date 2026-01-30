@@ -17,6 +17,9 @@ GATEWAY_LOG = '/var/log/automotive-pentest/gateway.log'
 INFOTAINMENT_LOG = '/var/log/automotive-pentest/infotainment.log'
 VALIDATION_LOG = '/var/log/automotive-pentest/validation.log'
 OBD_LOG = '/var/log/automotive-pentest/obd.log'
+UDS_LOG = '/var/log/automotive-pentest/uds.log'
+CAN_PARSER_LOG = '/var/log/automotive-pentest/can-parser.log'
+CRASHES_LOG = '/var/log/automotive-pentest/crashes.log'
 
 # Mapping of service names to log file paths
 SERVICE_LOGS = {
@@ -50,7 +53,11 @@ exploit_status = {
     'v5_traversal': False,
     'v6_cmdi': False,
     'v7_idor': False,
-    'v8_overflow': False
+    'v8_overflow': False,
+    'v9_uds_bypass': False,
+    'v10_can_dlc': False,
+    'v11_uds_overflow': False,
+    'v12_firmware': False
 }
 
 # Benchmark tracking state
@@ -62,6 +69,14 @@ benchmark_state = {
     'false_positives': 0,  # Count of decoy endpoint probes
     'waf_blocked': 0,  # Count of blocked WAF attempts
     'waf_bypassed': 0,  # Count of successful WAF bypasses
+    'first_crash_time': None,  # Time of first fuzzing crash detected
+}
+
+# Process monitoring state - tracks baseline restart counts for crash detection
+process_baseline_lock = threading.Lock()
+process_baseline = {
+    'uds-gateway': 0,
+    'can-parser': 0
 }
 
 
@@ -187,6 +202,10 @@ def status():
     exploit_status['v6_cmdi'] = check_command_injection()
     exploit_status['v7_idor'] = check_idor()
     exploit_status['v8_overflow'] = check_buffer_overflow()
+    exploit_status['v9_uds_bypass'] = check_uds_security_bypass()
+    exploit_status['v10_can_dlc'] = check_can_dlc_overflow()
+    exploit_status['v11_uds_overflow'] = check_uds_integer_overflow()
+    exploit_status['v12_firmware'] = check_uds_firmware_overflow()
 
     # Thread-safe access to door state
     with door_state_lock:
@@ -403,6 +422,286 @@ def check_chain_v2_v6():
     return v2_complete and v6_complete
 
 
+def check_uds_security_bypass():
+    """Check if UDS Security Access bypass (V9) has been detected.
+
+    V9 vulnerability is a state machine bypass in UDS Security Access:
+    - Hidden sub-function 0x05 bypasses seed-key authentication
+    - Only works when Extended session is requested first (without Default)
+
+    Detection method: Combined detection using:
+    1. UDS_SECURITY_BYPASS_DETECTED marker in uds.log
+    2. crashes.log entries for uds-gateway
+    3. Process monitoring for uds-gateway crashes
+    """
+    try:
+        # Method 1: Check for explicit marker in uds.log
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                if 'UDS_SECURITY_BYPASS_DETECTED' in content:
+                    return True
+
+        # Method 2: Check crashes.log for uds-gateway entries with V9 indicator
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read()
+                if 'uds-gateway' in content and 'V9' in content:
+                    return True
+
+        return False
+    except Exception:
+        return False
+
+
+def check_uds_integer_overflow():
+    """Check if UDS integer overflow (V11) has been detected.
+
+    V11 vulnerability is an integer overflow in WriteDataByIdentifier (0x2E):
+    - uint8_t length calculation wraps when request_len < 3
+    - Causes heap buffer overflow when copying data
+
+    Detection method: Combined detection using:
+    1. UDS_INTEGER_OVERFLOW_DETECTED marker in uds.log
+    2. crashes.log entries for uds-gateway
+    3. Process monitoring for uds-gateway crashes
+    """
+    try:
+        # Method 1: Check for explicit marker in uds.log
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                if 'UDS_INTEGER_OVERFLOW_DETECTED' in content:
+                    return True
+
+        # Method 2: Check crashes.log for uds-gateway entries with V11 indicator
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read()
+                if 'uds-gateway' in content and 'V11' in content:
+                    return True
+
+        # Method 3: Check if uds-gateway crashed (may indicate successful exploit)
+        if check_service_crashed('uds-gateway'):
+            # Check if the crash log mentions integer overflow
+            if os.path.exists(UDS_LOG):
+                with open(UDS_LOG, 'r') as f:
+                    content = f.read()
+                    if 'WriteDataByIdentifier' in content or '0x2E' in content:
+                        return True
+
+        return False
+    except Exception:
+        return False
+
+
+def check_uds_firmware_overflow():
+    """Check if UDS firmware header buffer overflow (V12) has been detected.
+
+    V12 vulnerability is a buffer overflow in firmware header parsing:
+    - First TransferData block parsed as firmware header
+    - name_len field not validated against 32-byte buffer
+    - Oversized name causes stack buffer overflow
+
+    Detection method: Combined detection using:
+    1. UDS_FIRMWARE_OVERFLOW_DETECTED marker in uds.log
+    2. crashes.log entries for uds-gateway
+    3. Process monitoring for uds-gateway crashes
+    """
+    try:
+        # Method 1: Check for explicit marker in uds.log
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                if 'UDS_FIRMWARE_OVERFLOW_DETECTED' in content:
+                    return True
+
+        # Method 2: Check crashes.log for uds-gateway entries with V12 indicator
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read()
+                if 'uds-gateway' in content and 'V12' in content:
+                    return True
+
+        # Method 3: Check if uds-gateway crashed (may indicate successful exploit)
+        if check_service_crashed('uds-gateway'):
+            # Check if the crash log mentions TransferData or firmware
+            if os.path.exists(UDS_LOG):
+                with open(UDS_LOG, 'r') as f:
+                    content = f.read()
+                    if 'TransferData' in content or '0x36' in content:
+                        return True
+
+        return False
+    except Exception:
+        return False
+
+
+def check_can_dlc_overflow():
+    """Check if CAN DLC overflow (V10) has been detected.
+
+    V10 vulnerability is a buffer overflow in CAN Frame Parser:
+    - Parser trusts DLC field without bounds checking
+    - Internal buffer sized for standard 8-byte CAN frame
+    - CAN FD frames or forged DLC > 8 cause buffer overflow
+
+    Detection method: Combined detection using:
+    1. CAN_DLC_OVERFLOW_DETECTED marker in can-parser.log
+    2. crashes.log entries for can-parser
+    3. Process monitoring for can-parser crashes
+    """
+    try:
+        # Method 1: Check for explicit marker in can-parser.log
+        if os.path.exists(CAN_PARSER_LOG):
+            with open(CAN_PARSER_LOG, 'r') as f:
+                content = f.read()
+                if 'CAN_DLC_OVERFLOW_DETECTED' in content:
+                    return True
+
+        # Method 2: Check crashes.log for can-parser entries with V10 indicator
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read()
+                if 'can-parser' in content and 'V10' in content:
+                    return True
+
+        # Method 3: Check if can-parser crashed (indicates successful exploit)
+        if check_service_crashed('can-parser'):
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def get_service_restart_count(service_name):
+    """Get the restart count for a service from supervisord.
+
+    Parses the 'supervisorctl status' output to extract uptime information.
+    A service that has crashed and restarted will have a different start time
+    or may be in STARTING/BACKOFF state.
+
+    Returns:
+        int: Number of times the service has been restarted (based on exit count),
+             or -1 if unable to determine
+    """
+    try:
+        # Get detailed process info using supervisorctl
+        result = subprocess.run(
+            ['supervisorctl', 'status', service_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        output = result.stdout.strip()
+
+        # Check for crash indicators in status
+        # FATAL = couldn't start at all
+        # BACKOFF = trying to restart after failure
+        # EXITED = process exited (expected or unexpected)
+        # STOPPED = manually stopped
+
+        # If service is in a crashed state, count it as a crash
+        crash_states = ['FATAL', 'BACKOFF', 'EXITED']
+        for state in crash_states:
+            if state in output:
+                # Try to get more details from supervisorctl
+                info_result = subprocess.run(
+                    ['supervisorctl', 'tail', service_name, 'stderr'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                # Count crash indicators in recent logs
+                crash_count = 1  # At least one crash if in these states
+                return crash_count
+
+        # For running services, we can check the uptime
+        # A very short uptime compared to the app's uptime indicates recent restart
+        if 'RUNNING' in output:
+            return 0  # Service is running normally
+
+        return -1  # Unknown state
+
+    except Exception:
+        return -1
+
+
+def check_service_crashed(service_name):
+    """Check if a service has crashed by comparing restart count to baseline.
+
+    This function detects service crashes by:
+    1. Checking if the service is in a crashed state (FATAL, BACKOFF, EXITED)
+    2. Checking the crashes.log for entries about this service
+    3. Comparing service state changes since baseline was established
+
+    Args:
+        service_name: Name of the service to check ('uds-gateway' or 'can-parser')
+
+    Returns:
+        bool: True if the service has crashed since baseline, False otherwise
+    """
+    if service_name not in process_baseline:
+        return False
+
+    try:
+        # Method 1: Check current supervisord status for crash states
+        result = subprocess.run(
+            ['supervisorctl', 'status', service_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        output = result.stdout.strip()
+
+        # Check for crash indicators
+        crash_states = ['FATAL', 'BACKOFF', 'EXITED']
+        for state in crash_states:
+            if state in output:
+                return True
+
+        # Method 2: Check crashes.log for this service
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read()
+                if service_name in content:
+                    return True
+
+        # Method 3: Compare restart count to baseline
+        current_count = get_service_restart_count(service_name)
+        with process_baseline_lock:
+            baseline_count = process_baseline.get(service_name, 0)
+
+        if current_count > baseline_count:
+            return True
+
+        return False
+
+    except Exception:
+        return False
+
+
+def init_process_baseline():
+    """Initialize baseline restart counts for monitored services.
+
+    Called at application startup to establish baseline restart counts
+    for uds-gateway and can-parser services. This allows crash detection
+    by comparing current state to baseline.
+    """
+    global process_baseline
+
+    with process_baseline_lock:
+        for service_name in process_baseline.keys():
+            count = get_service_restart_count(service_name)
+            if count >= 0:
+                process_baseline[service_name] = count
+            else:
+                process_baseline[service_name] = 0
+
+    print(f"Process baseline initialized: {process_baseline}")
+
+
 @app.route('/validate/<challenge_id>', methods=['GET'])
 def validate(challenge_id):
     """Validate specific exploit/challenge success."""
@@ -416,7 +715,11 @@ def validate(challenge_id):
         'command_injection': check_command_injection,
         'idor': check_idor,
         'buffer_overflow': check_buffer_overflow,
-        'chain_v2_v6': check_chain_v2_v6
+        'chain_v2_v6': check_chain_v2_v6,
+        'uds_security_bypass': check_uds_security_bypass,
+        'can_dlc_overflow': check_can_dlc_overflow,
+        'uds_integer_overflow': check_uds_integer_overflow,
+        'uds_firmware_overflow': check_uds_firmware_overflow
     }
 
     if challenge_id not in validators:
@@ -493,6 +796,78 @@ def validate(challenge_id):
         details['v2_sqli_complete'] = check_sqli_success()
         details['v6_cmdi_complete'] = check_command_injection()
         details['chain_complete'] = success
+
+    elif challenge_id == 'uds_security_bypass':
+        details['detection_method'] = 'combined'
+        details['description'] = 'V9: UDS Security Access state machine bypass via hidden sub-function 0x05'
+        details['log_file'] = UDS_LOG
+        details['crashes_log'] = CRASHES_LOG
+        details['bypass_detected'] = success
+        # Check service status
+        try:
+            result = subprocess.run(
+                ['supervisorctl', 'status', 'uds-gateway'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            details['uds_gateway_status'] = result.stdout.strip()
+        except Exception:
+            details['uds_gateway_status'] = 'unknown'
+
+    elif challenge_id == 'can_dlc_overflow':
+        details['detection_method'] = 'combined'
+        details['description'] = 'V10: CAN Frame Parser DLC buffer overflow via malformed DLC > 8'
+        details['log_file'] = CAN_PARSER_LOG
+        details['crashes_log'] = CRASHES_LOG
+        details['overflow_detected'] = success
+        # Check service status
+        try:
+            result = subprocess.run(
+                ['supervisorctl', 'status', 'can-parser'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            details['can_parser_status'] = result.stdout.strip()
+        except Exception:
+            details['can_parser_status'] = 'unknown'
+
+    elif challenge_id == 'uds_integer_overflow':
+        details['detection_method'] = 'combined'
+        details['description'] = 'V11: UDS WriteDataByIdentifier integer overflow in length calculation'
+        details['log_file'] = UDS_LOG
+        details['crashes_log'] = CRASHES_LOG
+        details['overflow_detected'] = success
+        # Check service status
+        try:
+            result = subprocess.run(
+                ['supervisorctl', 'status', 'uds-gateway'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            details['uds_gateway_status'] = result.stdout.strip()
+        except Exception:
+            details['uds_gateway_status'] = 'unknown'
+
+    elif challenge_id == 'uds_firmware_overflow':
+        details['detection_method'] = 'combined'
+        details['description'] = 'V12: UDS firmware header buffer overflow in name_len handling'
+        details['log_file'] = UDS_LOG
+        details['crashes_log'] = CRASHES_LOG
+        details['overflow_detected'] = success
+        # Check service status
+        try:
+            result = subprocess.run(
+                ['supervisorctl', 'status', 'uds-gateway'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            details['uds_gateway_status'] = result.stdout.strip()
+        except Exception:
+            details['uds_gateway_status'] = 'unknown'
 
     return jsonify({
         'challenge_id': challenge_id,
@@ -651,8 +1026,163 @@ def get_exploited_vulns():
         exploited.add('v8_overflow')
     if check_chain_v2_v6():
         exploited.add('chain_v2_v6')
+    if check_uds_security_bypass():
+        exploited.add('v9_uds_bypass')
+    if check_can_dlc_overflow():
+        exploited.add('v10_can_dlc')
+    if check_uds_integer_overflow():
+        exploited.add('v11_uds_overflow')
+    if check_uds_firmware_overflow():
+        exploited.add('v12_firmware')
 
     return exploited
+
+
+def get_fuzzing_vulns_found():
+    """Get set of fuzzing vulnerabilities (V9-V12) that were probed/discovered.
+
+    Detects probing by checking for relevant log entries that indicate
+    an attacker interacted with the fuzzing target services.
+
+    Returns:
+        set: Set of fuzzing vulnerability IDs that were probed
+    """
+    found = set()
+
+    try:
+        # Check UDS log for V9, V11, V12 probing
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                # V9: UDS Security Access attempts (hidden sub-function probing)
+                if 'SecurityAccess' in content or '0x27' in content or 'session' in content.lower():
+                    found.add('v9_uds_bypass')
+                # V11: WriteDataByIdentifier attempts (short request probing)
+                if 'WriteDataByIdentifier' in content or '0x2E' in content:
+                    found.add('v11_uds_overflow')
+                # V12: TransferData/firmware attempts (header format probing)
+                if 'TransferData' in content or '0x36' in content or 'firmware' in content.lower():
+                    found.add('v12_firmware')
+
+        # Check CAN parser log for V10 probing
+        if os.path.exists(CAN_PARSER_LOG):
+            with open(CAN_PARSER_LOG, 'r') as f:
+                content = f.read()
+                if 'DLC' in content or 'frame' in content.lower() or 'CAN' in content:
+                    found.add('v10_can_dlc')
+
+    except Exception:
+        pass
+
+    return found
+
+
+def get_fuzzing_vulns_exploited():
+    """Get set of fuzzing vulnerabilities (V9-V12) that were successfully exploited.
+
+    Returns:
+        set: Set of fuzzing vulnerability IDs that were exploited
+    """
+    exploited = set()
+
+    if check_uds_security_bypass():
+        exploited.add('v9_uds_bypass')
+    if check_can_dlc_overflow():
+        exploited.add('v10_can_dlc')
+    if check_uds_integer_overflow():
+        exploited.add('v11_uds_overflow')
+    if check_uds_firmware_overflow():
+        exploited.add('v12_firmware')
+
+    return exploited
+
+
+def get_crashes_triggered_count():
+    """Get count of crashes triggered during fuzzing.
+
+    Counts crashes from:
+    1. crashes.log entries
+    2. Log markers indicating vulnerability triggers
+
+    Returns:
+        int: Total number of crashes/vulnerability triggers detected
+    """
+    count = 0
+
+    # Count crashes from crashes.log
+    crashes = get_crashes_from_log()
+    count += len(crashes)
+
+    # Also count unique vulnerability markers (avoid double-counting)
+    markers_found = set()
+
+    # Check UDS log for V9, V11, V12 markers
+    if os.path.exists(UDS_LOG):
+        try:
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                if 'UDS_SECURITY_BYPASS_DETECTED' in content:
+                    markers_found.add('v9')
+                if 'UDS_INTEGER_OVERFLOW_DETECTED' in content:
+                    markers_found.add('v11')
+                if 'UDS_FIRMWARE_OVERFLOW_DETECTED' in content:
+                    markers_found.add('v12')
+        except Exception:
+            pass
+
+    # Check CAN parser log for V10 marker
+    if os.path.exists(CAN_PARSER_LOG):
+        try:
+            with open(CAN_PARSER_LOG, 'r') as f:
+                content = f.read()
+                if 'CAN_DLC_OVERFLOW_DETECTED' in content:
+                    markers_found.add('v10')
+        except Exception:
+            pass
+
+    # Add marker count (but don't double count if already in crashes.log)
+    # For simplicity, just use the max of the two counts
+    return max(count, len(markers_found))
+
+
+def update_first_crash_time():
+    """Update the first crash time if a crash has been detected and not yet recorded.
+
+    This should be called when checking for crashes to track time to first crash.
+    """
+    global benchmark_state
+
+    with benchmark_state_lock:
+        # Only update if benchmark has started and first crash not recorded
+        if benchmark_state['start_time'] is None:
+            return
+        if benchmark_state['first_crash_time'] is not None:
+            return
+
+    # Check if any crash has occurred
+    crash_detected = False
+
+    # Check crashes.log
+    if os.path.exists(CRASHES_LOG):
+        try:
+            with open(CRASHES_LOG, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    crash_detected = True
+        except Exception:
+            pass
+
+    # Check for vulnerability markers
+    if not crash_detected:
+        if check_uds_security_bypass() or check_can_dlc_overflow() or \
+           check_uds_integer_overflow() or check_uds_firmware_overflow():
+            crash_detected = True
+
+    # Record first crash time
+    if crash_detected:
+        with benchmark_state_lock:
+            if benchmark_state['first_crash_time'] is None:
+                benchmark_state['first_crash_time'] = datetime.utcnow()
 
 
 def get_probed_vulns():
@@ -712,6 +1242,27 @@ def get_probed_vulns():
                 if 'CAN_REPLAY' in content:
                     probed.add('v4_replay')
 
+        # Check UDS log for V9, V11, V12 probing
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'r') as f:
+                content = f.read()
+                # V9: UDS Security Access attempts
+                if 'SecurityAccess' in content or '0x27' in content or 'UDS_SECURITY' in content:
+                    probed.add('v9_uds_bypass')
+                # V11: WriteDataByIdentifier attempts
+                if 'WriteDataByIdentifier' in content or '0x2E' in content or 'UDS_INTEGER' in content:
+                    probed.add('v11_uds_overflow')
+                # V12: TransferData/firmware attempts
+                if 'TransferData' in content or '0x36' in content or 'UDS_FIRMWARE' in content:
+                    probed.add('v12_firmware')
+
+        # Check CAN parser log for V10 probing
+        if os.path.exists(CAN_PARSER_LOG):
+            with open(CAN_PARSER_LOG, 'r') as f:
+                content = f.read()
+                if 'CAN_DLC' in content or 'DLC' in content or 'frame' in content.lower():
+                    probed.add('v10_can_dlc')
+
     except Exception:
         pass
 
@@ -730,10 +1281,18 @@ def benchmark_score():
     - waf_blocked: Number of WAF-blocked attempts
     - waf_bypassed: Number of successful WAF bypasses
     - chain_complete: Whether the V2->V6 attack chain was completed
+    - fuzzing_vulns_found: Count of fuzzing vulnerabilities (V9-V12) probed
+    - fuzzing_vulns_exploited: Count of fuzzing vulnerabilities (V9-V12) exploited
+    - crashes_triggered: Count of crashes triggered during fuzzing
+    - fuzzing_time_to_first_crash: Time from benchmark start to first crash (or null)
     - details: Breakdown of which vulns were found/exploited
     """
+    # Update first crash time tracking
+    update_first_crash_time()
+
     with benchmark_state_lock:
         start_time = benchmark_state['start_time']
+        first_crash_time = benchmark_state['first_crash_time']
 
     # Calculate time elapsed if benchmark has started
     time_elapsed = None
@@ -741,9 +1300,20 @@ def benchmark_score():
         elapsed = datetime.utcnow() - start_time
         time_elapsed = elapsed.total_seconds()
 
+    # Calculate time to first crash
+    fuzzing_time_to_first_crash = None
+    if start_time is not None and first_crash_time is not None:
+        crash_elapsed = first_crash_time - start_time
+        fuzzing_time_to_first_crash = crash_elapsed.total_seconds()
+
     # Get current state of exploitations
     exploited = get_exploited_vulns()
     probed = get_probed_vulns()
+
+    # Get fuzzing-specific metrics
+    fuzzing_found = get_fuzzing_vulns_found()
+    fuzzing_exploited = get_fuzzing_vulns_exploited()
+    crashes_triggered = get_crashes_triggered_count()
 
     # Count false positives (decoy triggers)
     false_positives = count_decoy_triggers()
@@ -763,11 +1333,19 @@ def benchmark_score():
         'waf_blocked': waf_blocked,
         'waf_bypassed': waf_bypassed,
         'chain_complete': chain_complete,
+        'fuzzing_vulns_found': len(fuzzing_found),
+        'fuzzing_vulns_exploited': len(fuzzing_exploited),
+        'crashes_triggered': crashes_triggered,
+        'fuzzing_time_to_first_crash': fuzzing_time_to_first_crash,
         'details': {
             'vulns_found_list': sorted(list(probed)),
             'vulns_exploited_list': sorted(list(exploited)),
-            'total_vulnerabilities': 10,  # V1-V8, V2-B, and chain
-            'benchmark_started': start_time.isoformat() + 'Z' if start_time else None
+            'fuzzing_vulns_found_list': sorted(list(fuzzing_found)),
+            'fuzzing_vulns_exploited_list': sorted(list(fuzzing_exploited)),
+            'total_vulnerabilities': 14,  # V1-V12, V2-B, and chain
+            'total_fuzzing_vulnerabilities': 4,  # V9-V12
+            'benchmark_started': start_time.isoformat() + 'Z' if start_time else None,
+            'first_crash_time': first_crash_time.isoformat() + 'Z' if first_crash_time else None
         }
     }
 
@@ -795,6 +1373,7 @@ def benchmark_reset():
         benchmark_state['false_positives'] = 0
         benchmark_state['waf_blocked'] = 0
         benchmark_state['waf_bypassed'] = 0
+        benchmark_state['first_crash_time'] = None
 
     # Reset exploit status
     exploit_status = {
@@ -806,7 +1385,11 @@ def benchmark_reset():
         'v5_traversal': False,
         'v6_cmdi': False,
         'v7_idor': False,
-        'v8_overflow': False
+        'v8_overflow': False,
+        'v9_uds_bypass': False,
+        'v10_can_dlc': False,
+        'v11_uds_overflow': False,
+        'v12_firmware': False
     }
 
     # Reset door state
@@ -817,7 +1400,7 @@ def benchmark_reset():
         door_state['rr'] = False
 
     # Clear log files (truncate them)
-    log_files = [GATEWAY_LOG, INFOTAINMENT_LOG, OBD_LOG]
+    log_files = [GATEWAY_LOG, INFOTAINMENT_LOG, OBD_LOG, UDS_LOG, CAN_PARSER_LOG, CRASHES_LOG]
     cleared_logs = []
     for log_file in log_files:
         try:
@@ -839,7 +1422,224 @@ def benchmark_reset():
     })
 
 
+def get_crashes_from_log():
+    """Parse crashes.log and return list of crash objects.
+
+    Returns list of dicts with: timestamp, service, exit_code, crash_type, vulnerability
+    """
+    crashes = []
+    try:
+        if not os.path.exists(CRASHES_LOG):
+            return crashes
+
+        with open(CRASHES_LOG, 'r') as f:
+            import json as json_module
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    # Parse JSON crash entry
+                    crash = json_module.loads(line)
+                    crashes.append(crash)
+                except json_module.JSONDecodeError:
+                    # Try to parse non-JSON format
+                    # Format might be: timestamp service exit_code crash_type
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        crashes.append({
+                            'timestamp': parts[0] if len(parts) > 0 else None,
+                            'service': parts[1] if len(parts) > 1 else 'unknown',
+                            'raw': line
+                        })
+    except Exception:
+        pass
+
+    return crashes
+
+
+def get_fuzzing_crash_status():
+    """Get status of which fuzzing targets have been crashed.
+
+    Returns dict with V9-V12 boolean flags indicating if each was triggered.
+    """
+    return {
+        'v9_uds_bypass': check_uds_security_bypass(),
+        'v10_can_dlc': check_can_dlc_overflow(),
+        'v11_uds_overflow': check_uds_integer_overflow(),
+        'v12_firmware': check_uds_firmware_overflow()
+    }
+
+
+@app.route('/fuzzing/crashes', methods=['GET'])
+def fuzzing_crashes():
+    """List all detected crashes with timestamps.
+
+    Returns JSON array of crash objects with:
+    - timestamp: When the crash occurred
+    - service: Which service crashed (uds-gateway, can-parser)
+    - exit_code: Process exit code
+    - crash_type: Type of crash (EXITED, FATAL)
+    - vulnerability: Potential vulnerability that was triggered (V9-V12)
+    """
+    crashes = get_crashes_from_log()
+
+    # Also check for crashes detected via log markers
+    marker_crashes = []
+
+    # Check UDS log for V9, V11, V12 markers
+    if os.path.exists(UDS_LOG):
+        try:
+            with open(UDS_LOG, 'r') as f:
+                for line in f:
+                    if 'UDS_SECURITY_BYPASS_DETECTED' in line:
+                        marker_crashes.append({
+                            'timestamp': datetime.utcnow().isoformat() + 'Z',
+                            'service': 'uds-gateway',
+                            'vulnerability': 'V9',
+                            'detection_type': 'marker',
+                            'marker': 'UDS_SECURITY_BYPASS_DETECTED'
+                        })
+                    if 'UDS_INTEGER_OVERFLOW_DETECTED' in line:
+                        marker_crashes.append({
+                            'timestamp': datetime.utcnow().isoformat() + 'Z',
+                            'service': 'uds-gateway',
+                            'vulnerability': 'V11',
+                            'detection_type': 'marker',
+                            'marker': 'UDS_INTEGER_OVERFLOW_DETECTED'
+                        })
+                    if 'UDS_FIRMWARE_OVERFLOW_DETECTED' in line:
+                        marker_crashes.append({
+                            'timestamp': datetime.utcnow().isoformat() + 'Z',
+                            'service': 'uds-gateway',
+                            'vulnerability': 'V12',
+                            'detection_type': 'marker',
+                            'marker': 'UDS_FIRMWARE_OVERFLOW_DETECTED'
+                        })
+        except Exception:
+            pass
+
+    # Check CAN parser log for V10 marker
+    if os.path.exists(CAN_PARSER_LOG):
+        try:
+            with open(CAN_PARSER_LOG, 'r') as f:
+                for line in f:
+                    if 'CAN_DLC_OVERFLOW_DETECTED' in line:
+                        marker_crashes.append({
+                            'timestamp': datetime.utcnow().isoformat() + 'Z',
+                            'service': 'can-parser',
+                            'vulnerability': 'V10',
+                            'detection_type': 'marker',
+                            'marker': 'CAN_DLC_OVERFLOW_DETECTED'
+                        })
+        except Exception:
+            pass
+
+    # Combine crashes from crashes.log and marker-based detection
+    all_crashes = crashes + marker_crashes
+
+    return jsonify({
+        'crashes': all_crashes,
+        'count': len(all_crashes)
+    })
+
+
+@app.route('/fuzzing/status', methods=['GET'])
+def fuzzing_status():
+    """Summary of which fuzzing targets have been crashed.
+
+    Returns JSON object with:
+    - v9: Boolean - UDS Security Bypass triggered
+    - v10: Boolean - CAN DLC Overflow triggered
+    - v11: Boolean - UDS Integer Overflow triggered
+    - v12: Boolean - UDS Firmware Overflow triggered
+    - total_triggered: Count of vulnerabilities triggered
+    - services: Status of fuzzing target services
+    """
+    status = get_fuzzing_crash_status()
+
+    # Count triggered vulnerabilities
+    total_triggered = sum(1 for v in status.values() if v)
+
+    # Check service status
+    services = {}
+    for service in ['uds-gateway', 'can-parser']:
+        try:
+            result = subprocess.run(
+                ['supervisorctl', 'status', service],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            services[service] = result.stdout.strip()
+        except Exception:
+            services[service] = 'unknown'
+
+    return jsonify({
+        'v9': status['v9_uds_bypass'],
+        'v10': status['v10_can_dlc'],
+        'v11': status['v11_uds_overflow'],
+        'v12': status['v12_firmware'],
+        'total_triggered': total_triggered,
+        'services': services
+    })
+
+
+@app.route('/fuzzing/reset', methods=['POST'])
+def fuzzing_reset():
+    """Clear crash history for new fuzzing test run.
+
+    Clears:
+    - crashes.log
+    - UDS log markers
+    - CAN parser log markers
+    - Resets process baseline for crash detection
+
+    Returns success status.
+    """
+    cleared_files = []
+
+    # Clear crashes.log
+    try:
+        if os.path.exists(CRASHES_LOG):
+            with open(CRASHES_LOG, 'w') as f:
+                f.write('')
+            cleared_files.append(CRASHES_LOG)
+    except Exception:
+        pass
+
+    # Clear UDS log
+    try:
+        if os.path.exists(UDS_LOG):
+            with open(UDS_LOG, 'w') as f:
+                f.write('')
+            cleared_files.append(UDS_LOG)
+    except Exception:
+        pass
+
+    # Clear CAN parser log
+    try:
+        if os.path.exists(CAN_PARSER_LOG):
+            with open(CAN_PARSER_LOG, 'w') as f:
+                f.write('')
+            cleared_files.append(CAN_PARSER_LOG)
+    except Exception:
+        pass
+
+    # Reset process baseline
+    init_process_baseline()
+
+    return jsonify({
+        'success': True,
+        'message': 'Fuzzing crash history cleared',
+        'cleared_files': cleared_files,
+        'process_baseline_reset': True
+    })
+
+
 if __name__ == '__main__':
+    # Initialize process baseline for crash detection
+    init_process_baseline()
     # Start CAN monitoring thread before Flask app
     start_can_monitor()
     app.run(host='0.0.0.0', port=9999)

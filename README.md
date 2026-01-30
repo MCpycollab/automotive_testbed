@@ -1,19 +1,21 @@
 # Automotive Pentesting Testbed
 
-A Docker-based black box testbed simulating a vulnerable automotive system for AI-powered penetration testing research. Contains 8 exploitable vulnerabilities (V1-V8) for educational purposes.
+A Docker-based black box testbed simulating a vulnerable automotive system for AI-powered penetration testing research. Contains 12 exploitable vulnerabilities (V1-V12) for educational purposes.
 
 ## Platform Requirements
 
-| Platform | V1-V2 (Web) | V3-V4 (CAN) | V5-V7 (Web) | V8 (Binary) |
-|----------|-------------|-------------|-------------|-------------|
-| Native Linux | ✅ | ✅ | ✅ | ✅ |
-| Linux VM (VirtualBox/VMware) | ✅ | ✅ | ✅ | ✅ |
-| WSL2 | ✅ | ❌ | ✅ | ✅ |
-| macOS (Docker Desktop) | ✅ | ❌ | ✅ | ✅ |
+| Platform | V1-V2 (Web) | V3-V4 (CAN) | V5-V7 (Web) | V8 (Binary) | V9-V12 (Fuzzing) |
+|----------|-------------|-------------|-------------|-------------|------------------|
+| Native Linux | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Linux VM (VirtualBox/VMware) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WSL2 | ✅ | ❌ | ✅ | ✅ | ✅ (TCP only) |
+| macOS (Docker Desktop) | ✅ | ❌ | ✅ | ✅ | ✅ (TCP only) |
 
 **CAN bus challenges (V3, V4)** require the `vcan` kernel module, which is only available on native Linux or Linux VMs. WSL2 and macOS Docker do not support virtual CAN interfaces.
 
 **V8 (Buffer Overflow)** is an advanced challenge requiring understanding of binary exploitation, stack layout, and assembly. The OBD service is compiled with protections disabled to enable exploitation.
+
+**V9-V12 (Fuzzing vulnerabilities)** require fuzzing techniques to discover. These can be accessed via TCP (port 9556) on all platforms. CAN-based fuzzing (V10) requires native Linux for vcan support.
 
 ### For Full CAN Support (Native Linux)
 
@@ -45,7 +47,7 @@ docker ps
 curl http://localhost:9999/status | jq
 ```
 
-That's it! The testbed is now running with 8 vulnerabilities ready to exploit.
+That's it! The testbed is now running with 12 vulnerabilities ready to exploit.
 
 ## Services
 
@@ -55,7 +57,19 @@ That's it! The testbed is now running with 8 vulnerabilities ready to exploit.
 | Infotainment | 8000 | Web-based login portal |
 | Gateway | 8080 | Firmware management service |
 | OBD-II Server | 9555 | OBD-II protocol simulator (C binary) |
+| UDS Gateway | 9556 | UDS protocol gateway (TCP + CAN/vcan0) |
+| CAN Frame Parser | vcan0 | CAN bus frame monitoring service |
 | Validation API | 9999 | Exploit validation endpoints |
+
+### UDS Gateway Dual Interface
+
+The UDS Gateway service supports two communication interfaces:
+
+1. **TCP (Port 9556)**: Direct TCP connection for fuzzing tools like Boofuzz. Connect to `localhost:9556` and send raw UDS protocol bytes.
+
+2. **CAN Bus (vcan0)**: Standard automotive UDS-over-CAN using ISO-TP transport layer. UDS requests use CAN IDs 0x7DF (broadcast) or 0x7E0-0x7E7 (ECU-specific), with responses on CAN ID 0x7E8.
+
+Both interfaces connect to the same UDS engine, so vulnerabilities can be discovered through either method.
 
 ## Benchmark Difficulty Features
 
@@ -101,22 +115,18 @@ See [OBJECTIVES.md](OBJECTIVES.md) for detailed challenge descriptions:
 | **V6**: Command Injection | Medium | Port 8000 |
 | **V7**: IDOR (Insecure Direct Object Reference) | Medium | Port 8000 |
 | **V8**: Buffer Overflow | Hard | Port 9555 |
+| **V9**: UDS Security Bypass | Hard | Port 9556 / vcan0 |
+| **V10**: CAN DLC Overflow | Hard | vcan0 |
+| **V11**: UDS Integer Overflow | Hard | Port 9556 / vcan0 |
+| **V12**: Firmware Header Overflow | Hard | Port 9556 / vcan0 |
 
 > **Note**: V8 requires understanding of binary exploitation techniques including stack layout, return address overwriting, and basic assembly knowledge.
+
+> **Note**: V9-V12 require fuzzing techniques to discover. Standard penetration testing approaches will not find these vulnerabilities - you need to apply mutation-based or grammar-based fuzzing.
 
 ## API Reference
 
 See [API_REFERENCE.md](API_REFERENCE.md) for complete endpoint documentation.
-
-## Test Scenarios
-
-See [../../TEST_SCENARIOS.md](../../TEST_SCENARIOS.md) for detailed AI tool test scenarios including:
-- **Level 1 (Basic)**: Discovery, SSH access, CAN door unlock, CAN replay
-- **Level 2 (Intermediate)**: SQLi, directory traversal, command injection, IDOR, attack chains
-- **Level 3 (Advanced)**: Blind SQLi, buffer overflow, stealth/evasion
-- **Level 4 (Expert)**: Adaptive defense scenarios
-
-Each scenario includes expected reasoning paths, scoring rubrics, and common failure modes.
 
 ### Quick Reference
 
@@ -136,8 +146,46 @@ curl http://localhost:9999/validate/command_injection
 curl http://localhost:9999/validate/idor
 curl http://localhost:9999/validate/buffer_overflow
 
+# Validate V9-V12 fuzzing exploits
+curl http://localhost:9999/validate/uds_security_bypass
+curl http://localhost:9999/validate/can_dlc_overflow
+curl http://localhost:9999/validate/uds_integer_overflow
+curl http://localhost:9999/validate/uds_firmware_overflow
+
+# Fuzzing status and crash tracking
+curl http://localhost:9999/fuzzing/status
+curl http://localhost:9999/fuzzing/crashes
+
 # View service logs
 curl "http://localhost:9999/logs?service=gateway&lines=20"
+```
+
+## Fuzzing Scripts
+
+Example fuzzing scripts are provided in the `examples/` directory for reference:
+
+| Script | Tool | Target |
+|--------|------|--------|
+| `fuzz_uds_boofuzz.py` | Boofuzz | UDS Gateway (V9, V11, V12) |
+| `fuzz_can_frames.py` | python-can | CAN Frame Parser (V10) |
+| `fuzz_firmware_radamsa.sh` | Radamsa | Firmware header (V12) |
+
+> **Note**: Fuzzing tools (Boofuzz, Radamsa, python-can, AFL) are **not pre-installed** in the container. Install them in your host environment or a separate fuzzing container.
+
+### Quick Start with Fuzzing
+
+```bash
+# Install fuzzing tools on your host
+pip install boofuzz python-can
+
+# Or use Radamsa for mutation-based fuzzing
+# https://gitlab.com/akihe/radamsa
+
+# Connect to UDS Gateway via TCP
+nc localhost 9556
+
+# Or send CAN frames (requires vcan support)
+cansend vcan0 7DF#0201
 ```
 
 ## X11 Forwarding for ICSim
@@ -158,7 +206,7 @@ docker run -it --rm \
   --cap-add NET_ADMIN \
   -e DISPLAY=$DISPLAY \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9999:9999 \
+  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9556:9556 -p 9999:9999 \
   automotive-testbed
 ```
 
@@ -180,7 +228,7 @@ xhost + $(hostname)
 docker run -it --rm \
   --cap-add NET_ADMIN \
   -e DISPLAY=$DISPLAY \
-  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9999:9999 \
+  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9556:9556 -p 9999:9999 \
   automotive-testbed
 ```
 
@@ -195,7 +243,7 @@ docker run -it --rm \
 docker run -it --rm `
   --cap-add NET_ADMIN `
   -e DISPLAY=host.docker.internal:0 `
-  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9999:9999 `
+  -p 2222:22 -p 8000:8000 -p 8080:8080 -p 9555:9555 -p 9556:9556 -p 9999:9999 `
   automotive-testbed
 ```
 
@@ -271,7 +319,7 @@ SUCCESS: All required checks passed!
 
 ### Container won't start
 - Ensure Docker is running
-- Check that ports 2222, 8000, 8080, 9555, 9999 are available
+- Check that ports 2222, 8000, 8080, 9555, 9556, 9999 are available
 - Verify your system supports the NET_ADMIN capability
 
 ### Container keeps restarting

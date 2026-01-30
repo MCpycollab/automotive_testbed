@@ -80,9 +80,23 @@ RUN mkdir -p /opt/automotive-testbed/obd
 COPY obd/ /opt/automotive-testbed/obd/
 RUN cd /opt/automotive-testbed/obd && make
 
+# Copy UDS Gateway source and compile
+RUN mkdir -p /opt/automotive-testbed/uds
+COPY uds/ /opt/automotive-testbed/uds/
+RUN cd /opt/automotive-testbed/uds && make
+
+# Copy CAN Frame Parser source and compile
+RUN mkdir -p /opt/automotive-testbed/can-parser
+COPY can-parser/ /opt/automotive-testbed/can-parser/
+RUN cd /opt/automotive-testbed/can-parser && make
+
 # Copy SSH rate limiter service (fail2ban style protection)
 RUN mkdir -p /opt/automotive-testbed/ssh-rate-limiter
 COPY ssh-rate-limiter/ /opt/automotive-testbed/ssh-rate-limiter/
+
+# Copy crash monitor event listener for real-time crash detection
+RUN mkdir -p /opt/automotive-testbed/crash-monitor
+COPY crash-monitor/ /opt/automotive-testbed/crash-monitor/
 
 # Install iptables for SSH rate limiting (optional, service works without it)
 RUN apt-get update && apt-get install -y iptables && rm -rf /var/lib/apt/lists/*
@@ -105,8 +119,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # 8000 - Infotainment web application
 # 8080 - Gateway firmware service
 # 9555 - OBD-II simulator service
+# 9556 - UDS Gateway service
 # 9999 - Validation API
-EXPOSE 22 8000 8080 9555 9999
+EXPOSE 22 8000 8080 9555 9556 9999
 
 # Start entrypoint script which sets up vcan0 and then starts supervisord
 ENTRYPOINT ["/entrypoint.sh"]

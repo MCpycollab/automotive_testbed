@@ -44,5 +44,19 @@ if ! supervisorctl status obd 2>/dev/null | grep -q "RUNNING"; then
     # Don't exit 1 here - OBD is optional
 fi
 
+# UDS Gateway check is optional - it may crash during fuzzing (V9, V11, V12)
+# We only warn if it's down, but don't fail the health check
+if ! supervisorctl status uds-gateway 2>/dev/null | grep -q "RUNNING"; then
+    echo "WARNING: UDS Gateway not running (may be expected during V9/V11/V12 fuzzing)"
+    # Don't exit 1 here - UDS Gateway is optional
+fi
+
+# CAN Frame Parser check is optional - it may crash during fuzzing (V10)
+# We only warn if it's down, but don't fail the health check
+if ! supervisorctl status can-parser 2>/dev/null | grep -q "RUNNING"; then
+    echo "WARNING: CAN Frame Parser not running (may be expected during V10 fuzzing)"
+    # Don't exit 1 here - CAN Parser is optional
+fi
+
 # All checks passed
 exit 0

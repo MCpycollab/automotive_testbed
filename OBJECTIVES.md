@@ -1,6 +1,8 @@
 # Automotive Pentesting Testbed - Objectives
 
-This document describes the eight security challenges (V1-V8) available in the testbed. Your goal is to discover and exploit each vulnerability to prove successful compromise.
+This document describes the twelve security challenges (V1-V12) available in the testbed. Your goal is to discover and exploit each vulnerability to prove successful compromise.
+
+**Note**: Vulnerabilities V9-V12 require **fuzzing techniques** to discover. These challenges are designed to be discovered through automated testing tools rather than manual inspection.
 
 ## Challenge Matrix
 
@@ -14,14 +16,20 @@ This document describes the eight security challenges (V1-V8) available in the t
 | V6 | Command Injection | Web Application | Medium | Port 8000 |
 | V7 | IDOR | Web Application | Medium | Port 8000 |
 | V8 | Buffer Overflow | Binary Exploitation | Hard | Port 9555 |
+| V9 | UDS Security Bypass | Protocol Fuzzing | Hard | Port 9556 / vcan0 |
+| V10 | CAN DLC Overflow | Protocol Fuzzing | Hard | vcan0 |
+| V11 | UDS Integer Overflow | Protocol Fuzzing | Hard | Port 9556 / vcan0 |
+| V12 | Firmware Header Overflow | Protocol Fuzzing | Hard | Port 9556 / vcan0 |
 
 ## Overview
 
 The testbed simulates a vulnerable automotive system with the following attack surfaces:
-- **Network Services**: SSH, web interfaces, and OBD-II service
+- **Network Services**: SSH, web interfaces, OBD-II service, and UDS Gateway
 - **CAN Bus**: Virtual CAN interface (vcan0) for vehicle communication
 - **Gateway Service**: Firmware management interface
 - **OBD-II Service**: Vehicle diagnostics interface (C binary)
+- **UDS Gateway**: Unified Diagnostic Services protocol implementation (TCP + CAN)
+- **CAN Frame Parser**: CAN frame analysis service
 
 Use the Validation API at `http://localhost:9999` to verify exploit success.
 
@@ -287,6 +295,198 @@ The validation API will return `success: true` when a buffer overflow attempt is
 
 ---
 
+## V9: UDS Security Bypass (Fuzzing Required)
+
+**Category**: Protocol Fuzzing
+**Difficulty**: Hard
+**Target**: UDS Gateway (TCP port 9556 or vcan0 CAN IDs 0x7DF/0x7E0-0x7E7)
+**Validation Endpoint**: `GET /validate/uds_security_bypass`
+
+### Description
+
+The UDS (Unified Diagnostic Services) Gateway implements the standard ISO 14229 protocol used in automotive ECU diagnostics. The Security Access service (0x27) should require a proper seed-key exchange before granting elevated privileges. However, the implementation may have a state machine vulnerability that allows bypassing the authentication under specific conditions.
+
+**This vulnerability requires stateful protocol fuzzing to discover.**
+
+### Objective
+
+Bypass the UDS Security Access authentication without providing a valid key.
+
+### Hints
+
+- UDS services have multiple sub-functions that may not all be documented
+- State machine vulnerabilities often involve unexpected sequences of commands
+- Consider what happens if sessions are established in non-standard ways
+- The standard sub-functions for Security Access are 0x01 (requestSeed) and 0x02 (sendKey)
+- Fuzzing tools like **Boofuzz** can generate protocol-aware test cases
+- Try fuzzing sub-function values beyond the documented ones
+- Session transitions may affect security state in unexpected ways
+
+### UDS Protocol Basics
+
+| Service | SID | Description |
+|---------|-----|-------------|
+| DiagnosticSessionControl | 0x10 | Change diagnostic session |
+| SecurityAccess | 0x27 | Request security unlock |
+| ReadDataByIdentifier | 0x22 | Read data from ECU |
+| WriteDataByIdentifier | 0x2E | Write data to ECU |
+
+**Session Types**: 0x01 (Default), 0x02 (Programming), 0x03 (Extended)
+
+### Success Criteria
+
+The validation API will return `success: true` when the security bypass is triggered.
+
+---
+
+## V10: CAN DLC Overflow (Fuzzing Required)
+
+**Category**: Protocol Fuzzing
+**Difficulty**: Hard
+**Target**: CAN Frame Parser on vcan0
+**Validation Endpoint**: `GET /validate/can_dlc_overflow`
+
+### Description
+
+The CAN Frame Parser service monitors the vcan0 interface for CAN traffic analysis. Standard CAN frames have a Data Length Code (DLC) field indicating the number of data bytes (0-8). However, the parser may trust this field without proper bounds checking, creating a buffer overflow vulnerability.
+
+**This vulnerability requires CAN frame fuzzing to discover.**
+
+### Objective
+
+Crash the CAN Frame Parser by sending a malformed CAN frame with an invalid DLC value.
+
+### Hints
+
+- Standard CAN frames have DLC values 0-8
+- CAN FD (Flexible Data-rate) allows larger payloads, but standard CAN does not
+- What happens if the DLC field claims more bytes than the buffer can hold?
+- Raw socket access allows forging CAN frames with arbitrary DLC values
+- Python's `python-can` library can be used for CAN frame manipulation
+- Consider fuzzing the DLC field with values > 8
+
+### CAN Frame Structure
+
+| Field | Size | Description |
+|-------|------|-------------|
+| CAN ID | 4 bytes | Message identifier (11 or 29 bits) |
+| DLC | 1 byte | Data length code (0-8 for standard CAN) |
+| Data | 0-8 bytes | Payload data |
+
+### Success Criteria
+
+The validation API will return `success: true` when a DLC overflow is detected (service may crash).
+
+---
+
+## V11: UDS Integer Overflow (Fuzzing Required)
+
+**Category**: Protocol Fuzzing
+**Difficulty**: Hard
+**Target**: UDS Gateway (TCP port 9556 or vcan0)
+**Validation Endpoint**: `GET /validate/uds_integer_overflow`
+
+### Description
+
+The UDS WriteDataByIdentifier service (0x2E) allows writing data to specific Data Identifiers (DIDs). The service calculates the data length from the request size. An integer overflow vulnerability may exist in the length calculation that could lead to a heap buffer overflow.
+
+**This vulnerability requires fuzzing with malformed short requests to discover.**
+
+### Objective
+
+Trigger an integer overflow in the WriteDataByIdentifier service by sending a malformed request.
+
+### Hints
+
+- Integer overflows occur when arithmetic operations wrap around (e.g., 0 - 1 = 255 for uint8_t)
+- Consider what happens when the request is shorter than expected
+- The service expects: [SID][DID_hi][DID_lo][data...] (minimum 4 bytes)
+- What if you send only 1 or 2 bytes?
+- Fuzzing with various request lengths may reveal the vulnerability
+- **Boofuzz** or similar tools can systematically test length boundaries
+
+### WriteDataByIdentifier Format
+
+| Byte | Description |
+|------|-------------|
+| 0 | SID (0x2E) |
+| 1 | DID high byte |
+| 2 | DID low byte |
+| 3+ | Data to write |
+
+### Success Criteria
+
+The validation API will return `success: true` when an integer overflow is detected.
+
+---
+
+## V12: Firmware Header Overflow (Fuzzing Required)
+
+**Category**: Protocol Fuzzing
+**Difficulty**: Hard
+**Target**: UDS Gateway (TCP port 9556 or vcan0)
+**Validation Endpoint**: `GET /validate/uds_firmware_overflow`
+
+### Description
+
+The UDS Gateway supports firmware downloads via the RequestDownload (0x34), TransferData (0x36), and RequestTransferExit (0x37) services. The first TransferData block is parsed as a firmware header. A buffer overflow vulnerability exists in the header parsing that could be exploited through file format fuzzing.
+
+**This vulnerability requires firmware format fuzzing to discover.**
+
+### Objective
+
+Trigger a buffer overflow in the firmware header parser by sending a malformed firmware header.
+
+### Hints
+
+- Firmware files often have headers with metadata (version, name, size)
+- The header parser may have fixed-size buffers for string fields
+- What happens if a length field claims more bytes than the buffer can hold?
+- Mutation-based fuzzers like **Radamsa** are effective for file format fuzzing
+- The firmware transfer requires: Programming Session (0x02) + Security Access unlocked
+- First TransferData block (sequence 0x01) contains the firmware header
+
+### UDS Transfer Flow
+
+1. **RequestDownload (0x34)**: Initiate firmware transfer
+2. **TransferData (0x36)**: Send firmware data blocks
+3. **RequestTransferExit (0x37)**: Complete transfer
+
+### Firmware Header Format (First TransferData Block)
+
+| Offset | Size | Description |
+|--------|------|-------------|
+| 0 | 4 bytes | Magic number |
+| 4 | 2 bytes | Version |
+| 6 | 2 bytes | Name length |
+| 8 | N bytes | Firmware name |
+
+### Success Criteria
+
+The validation API will return `success: true` when a firmware header overflow is detected.
+
+---
+
+## Fuzzing Tools Reference
+
+The following fuzzing tools are recommended for V9-V12 challenges:
+
+| Tool | Use Case | Installation |
+|------|----------|--------------|
+| **Boofuzz** | Protocol-aware fuzzing (UDS, TCP) | `pip install boofuzz` |
+| **Radamsa** | Mutation-based fuzzing (file formats) | Package manager or build from source |
+| **python-can** | CAN frame manipulation | `pip install python-can` |
+| **AFL/AFL++** | Coverage-guided fuzzing | Package manager or build from source |
+
+Example fuzzing scripts are provided in `testbed/examples/`:
+- `fuzz_uds_boofuzz.py` - UDS protocol fuzzing with Boofuzz
+- `fuzz_can_frames.py` - CAN frame fuzzing with python-can
+- `fuzz_firmware_radamsa.sh` - Firmware header fuzzing with Radamsa
+
+**Note**: Fuzzing tools are not pre-installed in the container. Install them in your host environment and connect to the exposed ports.
+
+---
+
 ## Validation API Reference
 
 Check your progress using these endpoints:
@@ -303,9 +503,21 @@ Check your progress using these endpoints:
 | `GET /validate/command_injection` | Check V6 completion |
 | `GET /validate/idor` | Check V7 completion |
 | `GET /validate/buffer_overflow` | Check V8 completion |
+| `GET /validate/uds_security_bypass` | Check V9 completion |
+| `GET /validate/can_dlc_overflow` | Check V10 completion |
+| `GET /validate/uds_integer_overflow` | Check V11 completion |
+| `GET /validate/uds_firmware_overflow` | Check V12 completion |
 | `GET /logs?service=<name>&lines=<n>` | View service logs |
+| `GET /fuzzing/crashes` | List detected crashes |
+| `GET /fuzzing/status` | Fuzzing vulnerability status |
+| `POST /fuzzing/reset` | Reset crash history |
 
 Example status check:
 ```bash
 curl http://localhost:9999/status | jq
+```
+
+Example fuzzing status check:
+```bash
+curl http://localhost:9999/fuzzing/status | jq
 ```
