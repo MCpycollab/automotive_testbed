@@ -38,13 +38,16 @@ The testbed will start with a warning about missing CAN support. SSH and SQL inj
 cd automotive_testbed
 
 # 2. Build and start the testbed
-docker-compose up -d
+docker-compose up -d --build
 
 # 3. Verify the container is running
 docker ps
 
 # 4. Check system status via the Validation API
 curl http://localhost:9999/status | jq
+
+# 5. After initial build to start the container run the following:
+docker-compose up -d
 ```
 
 That's it! The testbed is now running with 12 vulnerabilities ready to exploit.
