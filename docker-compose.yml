@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  automotive-testbed:
+    build: .
+    container_name: automotive-testbed
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "2222:22"
+      - "8000:8000"
+      - "8080:8080"
+      - "9555:9555"
+      - "9556:9556"
+      - "9999:9999"
+    restart: unless-stopped
