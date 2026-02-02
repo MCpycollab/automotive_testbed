@@ -19,5 +19,9 @@ fi
 ip link set up vcan0
 echo "vcan0 interface is UP"
 
+# Ensure utmp exists for 'who' command (SSH validation)
+touch /var/run/utmp
+chmod 664 /var/run/utmp
+
 # Start supervisord as PID 1
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
