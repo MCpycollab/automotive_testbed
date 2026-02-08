@@ -35,19 +35,16 @@ The testbed will start with a warning about missing CAN support. SSH and SQL inj
 
 ```bash
 # 1. Clone this repository (or navigate to the directory containing docker-compose.yml)
-cd automotive_testbed
+cd ralph
 
 # 2. Build and start the testbed
-docker-compose up -d --build
+docker-compose up -d
 
 # 3. Verify the container is running
 docker ps
 
 # 4. Check system status via the Validation API
 curl http://localhost:9999/status | jq
-
-# 5. After initial build to start the container run the following:
-docker-compose up -d
 ```
 
 That's it! The testbed is now running with 12 vulnerabilities ready to exploit.
@@ -422,50 +419,3 @@ The script checks:
 
 A successful validation looks like:
 ```
-========================================
- Automotive Pentesting Testbed Validator
-========================================
-
-[PASS] vcan0 interface is UP
-[PASS] supervisord is running
-[PASS] sshd is RUNNING
-[PASS] validation-api is RUNNING
-[PASS] infotainment is RUNNING
-[PASS] gateway is RUNNING
-[INFO] obd is RUNNING (optional - may crash during V8 exploitation)
-...
-
-SUCCESS: All required checks passed!
-```
-
-## Troubleshooting
-
-### Container won't start
-- Ensure Docker is running
-- Check that ports 2222, 8000, 8080, 9555, 9556, 9999 are available
-- Verify your system supports the NET_ADMIN capability
-
-### Container keeps restarting
-- Check logs: `docker-compose logs`
-- If you see "Unknown device type" errors, your system lacks CAN support (see Platform Requirements above)
-- The container should still start and run V1/V2 challenges - rebuild with latest code if it's crash-looping
-
-### CAN commands fail
-- CAN interface requires NET_ADMIN capability (included in docker-compose.yml)
-- Verify vcan0 exists: `docker exec automotive-testbed ip link show vcan0`
-- On WSL2/macOS: CAN is not supported - only V1 and V2 challenges will work
-- On native Linux: Load the vcan module first with `sudo modprobe vcan`
-
-### API not responding
-- Check container status: `docker ps`
-- View container logs: `docker-compose logs`
-- Verify port mappings: `docker port automotive-testbed`
-
-### ICSim graphics not displaying
-- This is expected if image assets are unavailable from the upstream ICSim repository
-- The graphical display is optional - all challenges work in headless mode
-- Use the Validation API to verify door states: `curl http://localhost:9999/validate/doors_unlocked`
-
-## License
-
-For educational and research purposes only.

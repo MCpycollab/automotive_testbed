@@ -17,7 +17,7 @@ from collections import defaultdict
 # Configuration
 MAX_FAILURES = 3
 LOCKOUT_SECONDS = 30
-LOG_PATH = '/var/log/automotive-pentest/gateway.log'
+LOG_PATH = '/var/log/automotive-pentest/sshd.log'
 CHECK_INTERVAL = 1  # Check log every 1 second
 RATE_LIMIT_LOG = '/var/log/automotive-pentest/ssh-rate-limit.log'
 

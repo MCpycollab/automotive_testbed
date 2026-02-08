@@ -57,7 +57,7 @@ int tcp_listener_init(void) {
     return 0;
 }
 
-int tcp_listener_run(uds_state_t *state) {
+int tcp_listener_run(uds_state_t *state, pthread_mutex_t *state_mutex) {
     struct sockaddr_in client_addr;
     socklen_t client_len;
     int client_fd;
@@ -87,17 +87,17 @@ int tcp_listener_run(uds_state_t *state) {
                 break;
             }
 
-            /* Process UDS request */
+            /* Process UDS request (thread-safe) */
             resp_len = 0;
+            pthread_mutex_lock(state_mutex);
             uds_engine_process(state, buffer, (size_t)bytes_read, response, &resp_len);
+            uds_engine_check_timeout(state);
+            pthread_mutex_unlock(state_mutex);
 
             /* Send response */
             if (resp_len > 0) {
                 send(client_fd, response, resp_len, 0);
             }
-
-            /* Check for session timeout */
-            uds_engine_check_timeout(state);
         }
 
         log_message("TCP: Client disconnected\n");
@@ -106,6 +106,7 @@ int tcp_listener_run(uds_state_t *state) {
 
     return 0;
 }
+
 
 void tcp_listener_stop(void) {
     tcp_running = 0;

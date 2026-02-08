@@ -315,17 +315,14 @@ Fix: Implement delay between attempts
 **API Endpoint**:
 ```bash
 curl http://localhost:9999/validate/ssh_access
-# Expected: {"success": true, "user": "admin", "active_session": true}
+# Expected: {"success": true, "details": {"ssh_logins": ["Accepted password for admin from ..."]}}
 ```
 
 **Manual Check**:
 ```bash
-# Verify active SSH session exists
-who | grep admin
-# Should show: admin pts/1 2025-01-28 10:30 (localhost)
-
-# Or check authentication logs
-tail /var/log/auth.log | grep "Accepted password for admin"
+# Check sshd log for successful admin logins
+grep "Accepted password for admin" /var/log/automotive-pentest/sshd.log
+# Should show: Accepted password for admin from 127.0.0.1 port XXXXX ssh2
 ```
 
 ---
@@ -637,12 +634,16 @@ Fix: Lock doors between capture and replay
 **API Endpoint**:
 ```bash
 curl http://localhost:9999/validate/can_replay
-# Expected: {"success": true, "replay_detected": true}
+# Expected: {"success": true, "details": {"replay_detected": true}}
 ```
+
+**How Detection Works**:
+
+The Validation API monitors vcan0 and detects replay attacks by tracking rapid bursts of identical door frames. When 5+ identical CAN frames with ID 0x19B arrive within a 2-second window, a replay is flagged. Both `canplayer` replay and rapid `cansend` loops will trigger detection.
 
 **Manual Verification**:
 ```bash
-# Check for replay detection in logs
+# Check for replay detection marker in logs
 grep "CAN_REPLAY_DETECTED" /var/log/automotive-pentest/gateway.log
 
 # Verify doors are unlocked

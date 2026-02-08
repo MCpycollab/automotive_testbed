@@ -156,11 +156,11 @@ Validates whether a specific exploit/challenge has been completed.
 
 | ID | Challenge | Success Condition |
 |----|-----------|-------------------|
-| `ssh_access` | V1: SSH Access | Active SSH session as admin user |
+| `ssh_access` | V1: SSH Access | SSH login as admin detected in sshd log |
 | `sqli_success` | V2: SQL Injection | SQLi bypass detected via AUTH_RESULT entries |
 | `blind_sqli` | V2-B: Blind SQLi | Time-based extraction marker found in logs |
 | `doors_unlocked` | V3: Door Control | All four doors report unlocked |
-| `can_replay` | V4: CAN Replay | Replay attack marker found in logs |
+| `can_replay` | V4: CAN Replay | 5+ identical door frames detected within 2-second window |
 | `directory_traversal` | V5: Directory Traversal | FILE_ACCESS entries showing reads outside FIRMWARE_DIR |
 | `command_injection` | V6: Command Injection | PROCESS_EXEC entries showing injection artifacts |
 | `idor` | V7: IDOR | SETTINGS_ACCESS entries showing cross-user access |
@@ -173,7 +173,7 @@ Validates whether a specific exploit/challenge has been completed.
 
 **Details by Challenge**
 
-- **ssh_access**: Returns `active_sessions` array of current SSH sessions
+- **ssh_access**: Returns `ssh_logins` array of successful admin SSH login entries from sshd log
 - **sqli_success**: Returns `detection_method`, `description`, `log_file` path, and `sqli_detected` boolean
 - **blind_sqli**: Returns `log_file` path and `extraction_detected` boolean
 - **doors_unlocked**: Returns `door_states` object with each door's status
@@ -196,7 +196,7 @@ Validates whether a specific exploit/challenge has been completed.
   "challenge_id": "ssh_access",
   "success": true,
   "details": {
-    "active_sessions": ["admin    pts/0        2024-01-15 10:30"]
+    "ssh_logins": ["Accepted password for admin from 127.0.0.1 port 42630 ssh2"]
   }
 }
 
@@ -730,6 +730,7 @@ Resets all benchmark tracking for a new test run.
 - All exploit status tracking
 - All log files (gateway.log, infotainment.log, obd.log, uds.log, can-parser.log, crashes.log)
 - Door states
+- CAN replay detection state
 
 **Response**
 

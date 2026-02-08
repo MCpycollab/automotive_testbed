@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
@@ -204,6 +205,12 @@ void handle_client(int client_fd) {
     unsigned char buffer[BUFFER_SIZE];
     int bytes_read;
     char log_buf[256];
+
+    // Set receive timeout to prevent a single client from blocking the server
+    struct timeval tv;
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     snprintf(log_buf, sizeof(log_buf), "OBD: Client connected");
     log_message(log_buf);

@@ -34,6 +34,8 @@ curl http://localhost:9999/status | jq
 | Infotainment | 8000 | Web-based portal |
 | Gateway | 8080 | Firmware management service |
 | OBD-II Server | 9555 | Vehicle diagnostics interface |
+| UDS Gateway | 9556 | UDS protocol gateway (TCP + CAN/vcan0) |
+| CAN Frame Parser | vcan0 | CAN bus frame monitoring (CAN FD enabled) |
 | Validation API | 9999 | Status and validation endpoints |
 
 ## Validation API
@@ -83,7 +85,7 @@ docker exec automotive-testbed /opt/automotive-testbed/validate_setup.sh
 
 **Container won't start:**
 - Ensure Docker is running
-- Check that ports 2222, 8000, 8080, 9555, 9999 are available
+- Check that ports 2222, 8000, 8080, 9555, 9556, 9999 are available
 
 **CAN commands fail:**
 - WSL2/macOS: CAN is not supported

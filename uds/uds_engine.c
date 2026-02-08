@@ -89,7 +89,7 @@ int uds_engine_process(uds_state_t *state, const uint8_t *request, size_t req_le
 
         default:
             send_negative_response(sid, UDS_NRC_SERVICE_NOT_SUPPORTED, response, resp_len);
-            break;
+            return -1;
     }
 
     return 0;

@@ -22,7 +22,9 @@
 static volatile int running = 1;
 static FILE *log_fp = NULL;
 static pthread_t can_thread;
+static int can_thread_started = 0;
 static uds_state_t uds_state;
+static pthread_mutex_t uds_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void log_message(const char *format, ...) {
     if (log_fp) {
@@ -53,6 +55,7 @@ static int init_logging(void) {
 
 int main(int argc, char *argv[]) {
     int ret;
+    static can_listener_args_t can_args;
 
     (void)argc;
     (void)argv;
@@ -82,9 +85,13 @@ int main(int argc, char *argv[]) {
     if (ret < 0) {
         log_message("Warning: CAN listener init failed (vcan0 may not be available)\n");
     } else {
-        ret = pthread_create(&can_thread, NULL, can_listener_thread, &uds_state);
+        can_args.state = &uds_state;
+        can_args.state_mutex = &uds_state_mutex;
+        ret = pthread_create(&can_thread, NULL, can_listener_thread, &can_args);
         if (ret != 0) {
             log_message("Failed to create CAN listener thread\n");
+        } else {
+            can_thread_started = 1;
         }
     }
 
@@ -92,11 +99,13 @@ int main(int argc, char *argv[]) {
     printf("UDS Gateway ready - TCP:%d, CAN:vcan0\n", TCP_PORT);
 
     /* Run TCP listener in main thread */
-    tcp_listener_run(&uds_state);
+    tcp_listener_run(&uds_state, &uds_state_mutex);
 
     /* Cleanup */
     log_message("UDS Gateway shutting down\n");
-    pthread_join(can_thread, NULL);
+    if (can_thread_started) {
+        pthread_join(can_thread, NULL);
+    }
 
     if (log_fp && log_fp != stderr) {
         fclose(log_fp);

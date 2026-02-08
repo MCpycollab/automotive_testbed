@@ -115,7 +115,9 @@ static void send_uds_response(isotp_session_t *tx_session, const uint8_t *respon
 }
 
 void *can_listener_thread(void *arg) {
-    uds_state_t *state = (uds_state_t *)arg;
+    can_listener_args_t *args = (can_listener_args_t *)arg;
+    uds_state_t *state = args->state;
+    pthread_mutex_t *state_mutex = args->state_mutex;
     struct can_frame frame;
     isotp_session_t rx_session;
     isotp_session_t tx_session;
@@ -156,10 +158,12 @@ void *can_listener_thread(void *arg) {
 
         switch (ret) {
             case ISOTP_COMPLETE:
-                /* Complete message received, process through UDS engine */
+                /* Complete message received, process through UDS engine (thread-safe) */
                 uds_resp_len = 0;
+                pthread_mutex_lock(state_mutex);
                 uds_engine_process(state, complete_msg, msg_len,
                                   uds_response, &uds_resp_len);
+                pthread_mutex_unlock(state_mutex);
 
                 /* Send response via ISO-TP */
                 if (uds_resp_len > 0) {
@@ -196,7 +200,9 @@ void *can_listener_thread(void *arg) {
         }
 
         /* Check for UDS session timeout */
+        pthread_mutex_lock(state_mutex);
         uds_engine_check_timeout(state);
+        pthread_mutex_unlock(state_mutex);
     }
 
     return NULL;
