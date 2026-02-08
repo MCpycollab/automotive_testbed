@@ -10,8 +10,10 @@ modprobe vcan 2>/dev/null || true
 # Create vcan0 interface if it doesn't already exist
 if ! ip link show vcan0 >/dev/null 2>&1; then
     ip link add dev vcan0 type vcan
-    echo "Created vcan0 interface"
+    ip link set vcan0 mtu 72
+    echo "Created vcan0 interface (MTU=72 for CAN FD)"
 else
+    ip link set vcan0 mtu 72 2>/dev/null || true
     echo "vcan0 interface already exists"
 fi
 

@@ -5,10 +5,12 @@ Provides login functionality with intentional SQL injection vulnerability (V2).
 Provides media upload with intentional command injection vulnerability (V6).
 """
 import os
+import re
 import subprocess
 import sqlite3
 import time
 import threading
+from markupsafe import escape
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify, make_response
 
 app = Flask(__name__)
@@ -29,6 +31,7 @@ RATE_LIMIT_WINDOW_SECONDS = 10  # Time window in seconds
 # In-memory storage for rate limiting (IP -> list of request timestamps)
 rate_limit_store = {}
 rate_limit_lock = threading.Lock()
+rate_limit_call_count = 0
 
 
 def get_client_ip():
@@ -45,6 +48,11 @@ def check_rate_limit(ip_address):
     Returns (is_limited, retry_after_seconds).
     Uses a sliding window approach.
     """
+    global rate_limit_call_count
+    rate_limit_call_count += 1
+    if rate_limit_call_count % 100 == 0:
+        cleanup_rate_limit_store()
+
     current_time = time.time()
     window_start = current_time - RATE_LIMIT_WINDOW_SECONDS
 
@@ -278,7 +286,7 @@ def dashboard():
     <body>
         <div class="container">
             <h1>Welcome to the Infotainment Dashboard</h1>
-            <p>Hello, {session.get('username', 'User')}!</p>
+            <p>Hello, {escape(session.get('username', 'User'))}!</p>
             <p>You have successfully authenticated.</p>
             <p><a href="/logout">Logout</a></p>
         </div>
@@ -559,7 +567,6 @@ def admin_backup():
     safe_filename = os.path.basename(filename)
 
     # Additional validation: only allow alphanumeric, dash, underscore, dot
-    import re
     if not re.match(r'^[\w\-\.]+$', safe_filename):
         log_message(f"Backup filename rejected (invalid chars): {filename}")
         return jsonify({'error': 'Invalid request'}), 400
@@ -732,7 +739,7 @@ def log_process_execution(command, output, is_expected_ffmpeg=True):
 
     # Determine if this looks like command injection
     # Injection detected if: not a normal ffmpeg command AND (has metacharacters OR has artifacts)
-    injection_detected = not is_expected_ffmpeg or has_shell_metacharacters or has_injection_artifacts
+    injection_detected = (not is_expected_ffmpeg) and (has_shell_metacharacters or has_injection_artifacts)
 
     # Log the process execution with all relevant details
     log_message(f"PROCESS_EXEC: command={command[:200]}, is_expected_ffmpeg={is_expected_ffmpeg}, "

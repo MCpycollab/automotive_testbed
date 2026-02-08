@@ -3,17 +3,20 @@
 Validation API for Automotive Pentesting Testbed
 Provides endpoints for validating exploit success and system status.
 """
+import json
 import os
 import re
 import socket
 import struct
 import subprocess
 import threading
+import time
 from datetime import datetime
 from flask import Flask, jsonify, request
 
 # Log file paths
 GATEWAY_LOG = '/var/log/automotive-pentest/gateway.log'
+SSHD_LOG = '/var/log/automotive-pentest/sshd.log'
 INFOTAINMENT_LOG = '/var/log/automotive-pentest/infotainment.log'
 VALIDATION_LOG = '/var/log/automotive-pentest/validation.log'
 OBD_LOG = '/var/log/automotive-pentest/obd.log'
@@ -38,6 +41,13 @@ door_state = {
     'rl': False,  # Rear left
     'rr': False   # Rear right
 }
+
+# CAN replay detection state
+can_replay_detected = False
+can_replay_lock = threading.Lock()
+last_door_frames = []  # List of (timestamp, data_hex) for recent door frames
+MAX_REPLAY_WINDOW = 2.0  # seconds
+MIN_REPLAY_FRAMES = 5  # minimum identical frames to trigger
 
 # CAN frame format constants
 CAN_DOOR_ID = 0x19B  # CAN ID for door control messages
@@ -110,7 +120,7 @@ def can_monitor_thread():
 
     Listens for CAN ID 0x19B and updates door_state accordingly.
     """
-    global door_state
+    global door_state, can_replay_detected
 
     try:
         # Create raw CAN socket
@@ -145,6 +155,27 @@ def can_monitor_thread():
                     with door_state_lock:
                         door_state.update(new_door_state)
                     print(f"CAN monitor: Door state updated: {new_door_state}")
+
+                # Replay detection: track rapid identical door frames
+                now = time.time()
+                data_hex = can_data.hex()
+                with can_replay_lock:
+                    # Prune frames outside the replay window
+                    last_door_frames[:] = [
+                        (ts, dh) for ts, dh in last_door_frames
+                        if now - ts <= MAX_REPLAY_WINDOW
+                    ]
+                    last_door_frames.append((now, data_hex))
+                    # Count identical frames within the window
+                    identical_count = sum(1 for _, dh in last_door_frames if dh == data_hex)
+                    if identical_count >= MIN_REPLAY_FRAMES and not can_replay_detected:
+                        can_replay_detected = True
+                        print(f"CAN monitor: Replay attack detected! {identical_count} identical door frames in {MAX_REPLAY_WINDOW}s")
+                        try:
+                            with open(GATEWAY_LOG, 'a') as gf:
+                                gf.write(f"CAN_REPLAY_DETECTED: {identical_count} identical frames on ID 0x19B within {MAX_REPLAY_WINDOW}s\n")
+                        except Exception:
+                            pass
 
         except socket.timeout:
             # Timeout is expected, allows for clean shutdown checks
@@ -187,9 +218,13 @@ def status():
     services = {
         'sshd': check_service_running('sshd'),
         'infotainment': check_service_running('infotainment'),
+        'gateway': check_service_running('gateway'),
+        'obd': check_service_running('obd'),
+        'uds-gateway': check_service_running('uds-gateway'),
+        'can-parser': check_service_running('can-parser'),
         'validation-api': True,  # This service is running if we're responding
         'icsim': check_service_running('icsim'),
-        'controls': check_service_running('controls')
+        'icsim-controls': check_service_running('icsim-controls')
     }
 
     # Update exploit status based on current state
@@ -222,16 +257,14 @@ def status():
 
 
 def check_ssh_access():
-    """Check if admin user has an active SSH session."""
+    """Check if admin user has logged in via SSH by examining sshd log."""
     try:
-        result = subprocess.run(
-            ['who'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        # Check if 'admin' appears in the who output
-        return 'admin' in result.stdout
+        if not os.path.exists(SSHD_LOG):
+            return False
+        with open(SSHD_LOG, 'r') as f:
+            content = f.read()
+            return ('Accepted password for admin' in content or
+                    'Accepted publickey for admin' in content)
     except Exception:
         return False
 
@@ -267,12 +300,16 @@ def check_doors_unlocked():
 
 def check_can_replay():
     """Check if CAN replay attack has been detected."""
+    # Check in-memory flag first (fastest)
+    with can_replay_lock:
+        if can_replay_detected:
+            return True
+    # Fall back to log marker check
     try:
         if not os.path.exists(GATEWAY_LOG):
             return False
         with open(GATEWAY_LOG, 'r') as f:
             content = f.read()
-            # Look for replay detection marker in logs
             return 'CAN_REPLAY_DETECTED' in content
     except Exception:
         return False
@@ -735,10 +772,17 @@ def validate(challenge_id):
     # Add specific details based on challenge
     if challenge_id == 'ssh_access':
         try:
-            result = subprocess.run(['who'], capture_output=True, text=True, timeout=5)
-            details['active_sessions'] = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            if os.path.exists(SSHD_LOG):
+                with open(SSHD_LOG, 'r') as f:
+                    lines = f.readlines()
+                details['ssh_logins'] = [
+                    line.strip() for line in lines
+                    if 'Accepted password for admin' in line or 'Accepted publickey for admin' in line
+                ]
+            else:
+                details['ssh_logins'] = []
         except Exception:
-            details['active_sessions'] = []
+            details['ssh_logins'] = []
 
     elif challenge_id == 'sqli_success':
         details['detection_method'] = 'indirect'
@@ -1194,13 +1238,18 @@ def get_probed_vulns():
     probed = set()
 
     try:
-        # Check gateway.log for V1 (SSH) and V5 (directory traversal)
-        if os.path.exists(GATEWAY_LOG):
-            with open(GATEWAY_LOG, 'r') as f:
+        # Check sshd.log for V1 (SSH) probing
+        if os.path.exists(SSHD_LOG):
+            with open(SSHD_LOG, 'r') as f:
                 content = f.read()
                 # V1: SSH login attempts
                 if 'sshd' in content.lower() or 'ssh' in content.lower():
                     probed.add('v1_ssh')
+
+        # Check gateway.log for V5 (directory traversal)
+        if os.path.exists(GATEWAY_LOG):
+            with open(GATEWAY_LOG, 'r') as f:
+                content = f.read()
                 # V5: Firmware upload attempts (directory traversal)
                 if 'FILE_ACCESS:' in content or 'WAF_BLOCKED' in content or 'WAF_BYPASS' in content:
                     probed.add('v5_traversal')
@@ -1363,8 +1412,6 @@ def benchmark_reset():
 
     Returns success status and new start time.
     """
-    global exploit_status
-
     with benchmark_state_lock:
         # Reset benchmark state
         benchmark_state['start_time'] = datetime.utcnow()
@@ -1375,22 +1422,9 @@ def benchmark_reset():
         benchmark_state['waf_bypassed'] = 0
         benchmark_state['first_crash_time'] = None
 
-    # Reset exploit status
-    exploit_status = {
-        'v1_ssh': False,
-        'v2_sqli': False,
-        'v2b_blind_sqli': False,
-        'v3_doors': False,
-        'v4_replay': False,
-        'v5_traversal': False,
-        'v6_cmdi': False,
-        'v7_idor': False,
-        'v8_overflow': False,
-        'v9_uds_bypass': False,
-        'v10_can_dlc': False,
-        'v11_uds_overflow': False,
-        'v12_firmware': False
-    }
+    # Reset exploit status in-place (thread-safe: no reassignment of global)
+    for key in exploit_status:
+        exploit_status[key] = False
 
     # Reset door state
     with door_state_lock:
@@ -1399,8 +1433,14 @@ def benchmark_reset():
         door_state['rl'] = False
         door_state['rr'] = False
 
+    # Reset CAN replay detection state
+    global can_replay_detected
+    with can_replay_lock:
+        can_replay_detected = False
+        last_door_frames.clear()
+
     # Clear log files (truncate them)
-    log_files = [GATEWAY_LOG, INFOTAINMENT_LOG, OBD_LOG, UDS_LOG, CAN_PARSER_LOG, CRASHES_LOG]
+    log_files = [GATEWAY_LOG, SSHD_LOG, INFOTAINMENT_LOG, OBD_LOG, UDS_LOG, CAN_PARSER_LOG, CRASHES_LOG]
     cleared_logs = []
     for log_file in log_files:
         try:
@@ -1433,16 +1473,15 @@ def get_crashes_from_log():
             return crashes
 
         with open(CRASHES_LOG, 'r') as f:
-            import json as json_module
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     # Parse JSON crash entry
-                    crash = json_module.loads(line)
+                    crash = json.loads(line)
                     crashes.append(crash)
-                except json_module.JSONDecodeError:
+                except json.JSONDecodeError:
                     # Try to parse non-JSON format
                     # Format might be: timestamp service exit_code crash_type
                     parts = line.split()
@@ -1484,33 +1523,34 @@ def fuzzing_crashes():
     """
     crashes = get_crashes_from_log()
 
-    # Also check for crashes detected via log markers
+    # Also check for crashes detected via log markers (deduplicated)
     marker_crashes = []
+    seen_markers = set()
 
     # Check UDS log for V9, V11, V12 markers
     if os.path.exists(UDS_LOG):
         try:
             with open(UDS_LOG, 'r') as f:
                 for line in f:
-                    if 'UDS_SECURITY_BYPASS_DETECTED' in line:
+                    if 'UDS_SECURITY_BYPASS_DETECTED' in line and 'V9' not in seen_markers:
+                        seen_markers.add('V9')
                         marker_crashes.append({
-                            'timestamp': datetime.utcnow().isoformat() + 'Z',
                             'service': 'uds-gateway',
                             'vulnerability': 'V9',
                             'detection_type': 'marker',
                             'marker': 'UDS_SECURITY_BYPASS_DETECTED'
                         })
-                    if 'UDS_INTEGER_OVERFLOW_DETECTED' in line:
+                    if 'UDS_INTEGER_OVERFLOW_DETECTED' in line and 'V11' not in seen_markers:
+                        seen_markers.add('V11')
                         marker_crashes.append({
-                            'timestamp': datetime.utcnow().isoformat() + 'Z',
                             'service': 'uds-gateway',
                             'vulnerability': 'V11',
                             'detection_type': 'marker',
                             'marker': 'UDS_INTEGER_OVERFLOW_DETECTED'
                         })
-                    if 'UDS_FIRMWARE_OVERFLOW_DETECTED' in line:
+                    if 'UDS_FIRMWARE_OVERFLOW_DETECTED' in line and 'V12' not in seen_markers:
+                        seen_markers.add('V12')
                         marker_crashes.append({
-                            'timestamp': datetime.utcnow().isoformat() + 'Z',
                             'service': 'uds-gateway',
                             'vulnerability': 'V12',
                             'detection_type': 'marker',
@@ -1524,9 +1564,9 @@ def fuzzing_crashes():
         try:
             with open(CAN_PARSER_LOG, 'r') as f:
                 for line in f:
-                    if 'CAN_DLC_OVERFLOW_DETECTED' in line:
+                    if 'CAN_DLC_OVERFLOW_DETECTED' in line and 'V10' not in seen_markers:
+                        seen_markers.add('V10')
                         marker_crashes.append({
-                            'timestamp': datetime.utcnow().isoformat() + 'Z',
                             'service': 'can-parser',
                             'vulnerability': 'V10',
                             'detection_type': 'marker',

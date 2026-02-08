@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <stdint.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
 
@@ -58,6 +59,12 @@ static int init_can_socket(void) {
     if (can_socket < 0) {
         log_message("Error: Failed to create CAN socket\n");
         return -1;
+    }
+
+    /* Enable CAN FD frame support to receive frames with DLC > 8 */
+    int canfd_on = 1;
+    if (setsockopt(can_socket, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &canfd_on, sizeof(canfd_on)) < 0) {
+        log_message("Warning: Could not enable CAN FD frames\n");
     }
 
     /* Get interface index */
@@ -127,14 +134,15 @@ static void process_can_frame(struct can_frame *frame) {
 }
 
 static void run_parser(void) {
-    struct can_frame frame;
+    struct canfd_frame fdframe;
+    struct can_frame *frame;
     ssize_t nbytes;
 
-    log_message("CAN Frame Parser running, monitoring %s\n", CAN_INTERFACE);
-    printf("CAN Frame Parser running, monitoring %s\n", CAN_INTERFACE);
+    log_message("CAN Frame Parser running, monitoring %s (CAN FD enabled)\n", CAN_INTERFACE);
+    printf("CAN Frame Parser running, monitoring %s (CAN FD enabled)\n", CAN_INTERFACE);
 
     while (running) {
-        nbytes = read(can_socket, &frame, sizeof(struct can_frame));
+        nbytes = read(can_socket, &fdframe, sizeof(struct canfd_frame));
 
         if (nbytes < 0) {
             if (running) {
@@ -148,7 +156,17 @@ static void run_parser(void) {
             continue;
         }
 
-        process_can_frame(&frame);
+        /* Cast canfd_frame to can_frame pointer for process_can_frame */
+        frame = (struct can_frame *)&fdframe;
+
+        /* For CAN FD frames (72 bytes), copy the FD length into can_dlc
+         * so process_can_frame sees the real data length (up to 64).
+         * This is what makes V10 exploitable: DLC > 8 reaches memcpy. */
+        if (nbytes == (ssize_t)sizeof(struct canfd_frame)) {
+            frame->can_dlc = fdframe.len;
+        }
+
+        process_can_frame(frame);
     }
 }
 
@@ -169,6 +187,9 @@ int main(int argc, char *argv[]) {
     /* Initialize CAN socket */
     if (init_can_socket() < 0) {
         log_message("Failed to initialize CAN socket\n");
+        if (log_fp && log_fp != stderr) {
+            fclose(log_fp);
+        }
         return 1;
     }
 

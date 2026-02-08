@@ -1,6 +1,7 @@
 #ifndef TCP_LISTENER_H
 #define TCP_LISTENER_H
 
+#include <pthread.h>
 #include "uds_engine.h"
 
 /* TCP listener configuration */
@@ -10,7 +11,7 @@
 
 /* Function prototypes */
 int tcp_listener_init(void);
-int tcp_listener_run(uds_state_t *state);
+int tcp_listener_run(uds_state_t *state, pthread_mutex_t *state_mutex);
 void tcp_listener_stop(void);
 
 #endif /* TCP_LISTENER_H */

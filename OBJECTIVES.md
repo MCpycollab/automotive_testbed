@@ -156,11 +156,12 @@ Capture and replay CAN bus traffic to trigger the replay detection mechanism.
 
 - Use `candump` to capture CAN traffic
 - Use `canplayer` to replay captured traffic
-- The system monitors for specific replay patterns
+- The system detects replay attacks by monitoring for rapid bursts of identical door frames (5+ identical frames on CAN ID 0x19B within 2 seconds)
+- Both `canplayer` replay and rapid `cansend` loops will trigger detection
 
 ### Success Criteria
 
-The validation API will return `success: true` when a replay attack is detected.
+The validation API will return `success: true` when a replay attack pattern is detected (rapid identical door frames).
 
 ---
 
@@ -348,34 +349,34 @@ The validation API will return `success: true` when the security bypass is trigg
 
 ### Description
 
-The CAN Frame Parser service monitors the vcan0 interface for CAN traffic analysis. Standard CAN frames have a Data Length Code (DLC) field indicating the number of data bytes (0-8). However, the parser may trust this field without proper bounds checking, creating a buffer overflow vulnerability.
+The CAN Frame Parser service monitors the vcan0 interface for CAN traffic analysis. The vcan0 interface is configured with MTU 72 (CAN FD enabled), and the parser accepts CAN FD frames with data lengths up to 64 bytes. However, the parser copies frame data into a fixed 8-byte buffer using the length field without bounds checking, creating a buffer overflow vulnerability when CAN FD frames with more than 8 bytes of data are received.
 
-**This vulnerability requires CAN frame fuzzing to discover.**
+**This vulnerability requires CAN FD frame fuzzing to discover.**
 
 ### Objective
 
-Crash the CAN Frame Parser by sending a malformed CAN frame with an invalid DLC value.
+Trigger a buffer overflow in the CAN Frame Parser by sending a CAN FD frame with more than 8 bytes of data.
 
 ### Hints
 
-- Standard CAN frames have DLC values 0-8
-- CAN FD (Flexible Data-rate) allows larger payloads, but standard CAN does not
-- What happens if the DLC field claims more bytes than the buffer can hold?
-- Raw socket access allows forging CAN frames with arbitrary DLC values
-- Python's `python-can` library can be used for CAN frame manipulation
-- Consider fuzzing the DLC field with values > 8
+- Standard CAN frames have DLC values 0-8, but CAN FD allows up to 64 bytes
+- The vcan0 interface has MTU 72 (CAN FD support is enabled)
+- The parser accepts CAN FD frames but uses an 8-byte internal buffer
+- Use `cansend` with CAN FD syntax: `cansend vcan0 <ID>##<flags>.<data>`
+- Python's `python-can` library supports CAN FD with `is_fd=True`
+- The overflow detection marker is logged before the memcpy, so it is captured even if the parser crashes
 
-### CAN Frame Structure
+### CAN FD Frame Structure
 
 | Field | Size | Description |
 |-------|------|-------------|
 | CAN ID | 4 bytes | Message identifier (11 or 29 bits) |
-| DLC | 1 byte | Data length code (0-8 for standard CAN) |
-| Data | 0-8 bytes | Payload data |
+| Length | 1 byte | Data length (0-64 for CAN FD) |
+| Data | 0-64 bytes | Payload data |
 
 ### Success Criteria
 
-The validation API will return `success: true` when a DLC overflow is detected (service may crash).
+The validation API will return `success: true` when a DLC overflow is detected (parser logs the marker before the overflow occurs).
 
 ---
 

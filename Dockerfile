@@ -50,8 +50,9 @@ RUN mkdir -p /run/sshd
 RUN sed -i 's/#LogLevel INFO/LogLevel INFO/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-# Install Flask for validation API
-RUN pip3 install flask
+# Install Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 # Create log directory for all testbed services
 RUN mkdir -p /var/log/automotive-pentest
