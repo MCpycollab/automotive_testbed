@@ -416,6 +416,3 @@ The script checks:
 - Optional services status (obd - may crash during buffer overflow exploitation)
 - API endpoints respond correctly
 - Log directory is accessible
-```
-
-
