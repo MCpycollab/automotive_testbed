@@ -35,7 +35,7 @@ The testbed will start with a warning about missing CAN support. SSH and SQL inj
 
 ```bash
 # 1. Clone this repository (or navigate to the directory containing docker-compose.yml)
-cd ralph
+cd automotive_testbed
 
 # 2. Build and start the testbed
 docker-compose up -d
@@ -419,3 +419,4 @@ The script checks:
 
 A successful validation looks like:
 ```
+
